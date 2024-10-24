@@ -23,6 +23,7 @@
 
 NodeBase::NodeBase()
   // TODO: initialize member variables (e.g., pointer to Symbol)
+  : m_symbol(nullptr), m_type(nullptr)
 {
 }
 
@@ -30,3 +31,36 @@ NodeBase::~NodeBase() {
 }
 
 // TODO: implement member functions
+// Sets the symbol table entry for this node
+void NodeBase::set_symbol(Symbol *symbol) {
+  assert(!has_symbol() && "Symbol already set for this node.");
+  assert(m_type == nullptr && "Type already set; cannot set symbol.");
+  m_symbol = symbol;
+}
+
+// Sets the type for this node
+void NodeBase::set_type(const std::shared_ptr<Type> &type) {
+  assert(!has_symbol() && "Symbol already set; cannot set type.");
+  assert(!m_type && "Type already set for this node.");
+  m_type = type;
+}
+
+// Checks if this node has an associated symbol
+bool NodeBase::has_symbol() const {
+  return m_symbol != nullptr;
+}
+
+// Retrieves the associated symbol
+Symbol *NodeBase::get_symbol() const {
+  return m_symbol;
+}
+
+// Retrieves the type associated with this node
+std::shared_ptr<Type> NodeBase::get_type() const {
+  if (has_symbol()) {
+    return m_symbol->get_type(); // Symbol will definitely have a valid Type
+  } else {
+    assert(m_type); // Type should be set
+    return m_type;
+  }
+}
