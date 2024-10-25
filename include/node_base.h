@@ -53,6 +53,7 @@ public:
   NodeBase();
   virtual ~NodeBase();
 
+  // TODO: add member functions
   // Sets the symbol table entry for this node
   void set_symbol(Symbol *symbol);
 
@@ -67,9 +68,6 @@ public:
 
   // Retrieves the type associated with this node
   std::shared_ptr<Type> get_type() const;
-
-  // TODO: add member functions
-
 };
 
 #endif // NODE_BASE_H

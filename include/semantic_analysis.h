@@ -84,6 +84,10 @@ private:
   void leave_scope();
 
   // TODO: add helper functions
+  Node *promote_to_int(Node *n);
+  Node *implicit_conversion(Node *n, std::shared_ptr<Type> target_type);
+  BasicTypeKind string_to_basic_type_kind(const std::string &str);
+  bool is_type_qualifier(const std::string &str);
 };
 
 #endif // SEMANTIC_ANALYSIS_H
