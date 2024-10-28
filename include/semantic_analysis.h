@@ -38,6 +38,10 @@ private:
   SymbolTable *m_global_symtab, *m_cur_symtab;
   SymbolTableList m_all_symtabs;
 
+  // Member variables for current declarator processing
+  std::string m_var_name;
+  std::shared_ptr<Type> m_var_type;
+
 public:
   SemanticAnalysis(const Options &options);
   virtual ~SemanticAnalysis();
@@ -85,7 +89,7 @@ private:
 
   // TODO: add helper functions
   Node *promote_to_int(Node *n);
-  Node *implicit_conversion(Node *n, std::shared_ptr<Type> target_type);
+  Node *implicit_conversion(Node *n, std::shared_ptr<Type> &target_type);
   BasicTypeKind string_to_basic_type_kind(const std::string &str);
   bool is_type_qualifier(const std::string &str);
 };
