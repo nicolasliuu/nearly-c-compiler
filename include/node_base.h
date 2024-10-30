@@ -58,7 +58,7 @@ public:
   void set_symbol(Symbol *symbol);
 
   // Sets the type for this node
-  void set_type(const std::shared_ptr<Type> &type);
+  void set_type(const std::shared_ptr<Type> type);
 
   // Checks if this node has an associated symbol
   bool has_symbol() const;

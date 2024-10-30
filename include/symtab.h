@@ -134,8 +134,11 @@ public:
 
   int get_depth() const;
 
+  const std::vector<Symbol*> &get_symbols() const;
+
 private:
   // TODO: add helper functions
+
 };
 
 #endif // SYMTAB_H

@@ -157,3 +157,6 @@ int SymbolTable::get_depth() const {
 }
 
 // TODO: add helper functions
+const std::vector<Symbol*>& SymbolTable::get_symbols() const {
+    return m_symbols;
+}

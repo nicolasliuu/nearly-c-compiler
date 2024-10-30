@@ -92,6 +92,11 @@ private:
   Node *implicit_conversion(Node *n, std::shared_ptr<Type> &target_type);
   BasicTypeKind string_to_basic_type_kind(const std::string &str);
   bool is_type_qualifier(const std::string &str);
+  void is_less_precise(Node *left_node, Node *right_node, Node *expr_node);
+  std::shared_ptr<Type> get_int_type();
+  std::shared_ptr<Type> get_ptrdiff_t_type();
+  int determine_precision(const Type* type, const Location& loc);
+  bool types_compatible_for_assignment(std::shared_ptr<Type> lhs, std::shared_ptr<Type> rhs);
 };
 
 #endif // SEMANTIC_ANALYSIS_H
