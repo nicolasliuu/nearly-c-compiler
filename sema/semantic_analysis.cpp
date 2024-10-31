@@ -103,27 +103,28 @@ void SemanticAnalysis::visit_variable_declaration(Node *n) {
         // Initialize member variables for the current declarator
         m_var_name.clear();
         m_var_type = base_type;
-        if (!m_var_type) {
-            std::cerr << "Error: m_var_type is nullptr after setting to base_type\n";
-        }
 
-        // **Set the type on the declarator node**
-        declarator_node->set_type(m_var_type);
-
-        // Visit the declarator to process its type and name
+        // Visit the declarator to process its name and type
         visit(declarator_node);
 
-        // Ensure that the variable name and type have been set
-        assert(m_var_type);
-
-        // Prevent variables of type 'void' (unless it's a pointer to void)
-        if (m_var_type->is_void() && !m_var_type->is_pointer()) {
-            SemanticError::raise(declarator_node->get_loc(),
-                                 "Variable '%s' declared as void", m_var_name.c_str());
+        // Add the symbol to the current symbol table
+        if (m_cur_symtab->has_symbol_local(m_var_name)) {
+            SemanticError::raise(declarator_node->get_loc(), "Duplicate variable '%s'", m_var_name.c_str());
         }
+
+        Symbol *sym = m_cur_symtab->add_entry(
+            declarator_node->get_loc(),
+            SymbolKind::VARIABLE,
+            m_var_name,
+            m_var_type
+        );
+
+        // Annotate the declarator node with the symbol and type
+        declarator_node->set_symbol(sym);
+        declarator_node->set_type(m_var_type);
     }
 
-    // **Set the type on the AST_VARIABLE_DECLARATION node**
+    // Set the type on the AST_VARIABLE_DECLARATION node
     n->set_type(base_type);
 }
 
@@ -141,7 +142,6 @@ void SemanticAnalysis::visit_variable_declaration(Node *n) {
 bool SemanticAnalysis::is_type_qualifier(const std::string &str) {
     return str == "const" || str == "volatile";
 }
-
 void SemanticAnalysis::visit_basic_type(Node *n) {
     assert(n != nullptr);
 
@@ -172,6 +172,16 @@ void SemanticAnalysis::visit_basic_type(Node *n) {
     // Apply default rules
     if (specifiers.empty() || (!specifiers.count("char") && !specifiers.count("int") && !specifiers.count("void"))) {
         specifiers.insert("int");
+    }
+
+    // Existing validation: void cannot be combined with other specifiers
+    if (specifiers.count("void") && specifiers.size() > 1) {
+        SemanticError::raise(n->get_loc(), "Void type cannot be combined with other type specifiers.");
+    }
+
+    // **New Validation: void cannot have qualifiers**
+    if (specifiers.count("void") && !qualifiers.empty()) {
+        SemanticError::raise(n->get_loc(), "Type qualifiers 'const' and 'volatile' cannot be applied to 'void'.");
     }
 
     // Validation rules
@@ -224,7 +234,7 @@ void SemanticAnalysis::visit_basic_type(Node *n) {
 
     // Annotate the AST node with the type
     if (!final_type) {
-    std::cerr << "Error: final_type is nullptr in visit_basic_type\n";
+        std::cerr << "Error: final_type is nullptr in visit_basic_type\n";
     } 
     n->set_type(final_type);
 }
@@ -233,36 +243,24 @@ void SemanticAnalysis::visit_named_declarator(Node *n) {
     assert(n != nullptr);
     assert(n->get_tag() == AST_NAMED_DECLARATOR);
 
-    // The identifier is the first child
-    Node *ident_node = n->get_kid(0);
-    std::string var_name = ident_node->get_str();
-
-    // Check for redefinition in the current scope
-    if (m_cur_symtab->has_symbol_local(var_name)) {
-        SemanticError::raise(ident_node->get_loc(), "Redefinition of variable '%s'", var_name.c_str());
+    // Ensure that the named declarator has at least one child (the identifier)
+    if (n->get_num_kids() < 1) {
+        SemanticError::raise(n->get_loc(), "AST_NAMED_DECLARATOR node has no children.");
     }
 
-    // The type should have been set by the declarator node
-    std::shared_ptr<Type> var_type = n->get_type();
-    assert(var_type && "Type not set for this AST_NAMED_DECLARATOR node");
+    // The identifier is always the last child
+    Node *ident_node = n->get_kid(n->get_num_kids() - 1);
 
-    // Prevent variables of type 'void' (unless it's a pointer to void)
-    if (var_type->is_void() && !var_type->is_pointer()) {
-        SemanticError::raise(n->get_loc(),
-                             "Variable '%s' declared as void", var_name.c_str());
+    // Validate the identifier node
+    if (ident_node == nullptr || ident_node->get_str().empty()) {
+        SemanticError::raise(n->get_loc(), "Identifier in AST_NAMED_DECLARATOR is missing or empty.");
     }
 
-    // Add the variable to the symbol table
-    Symbol *sym = m_cur_symtab->add_entry(
-        ident_node->get_loc(),
-        SymbolKind::VARIABLE,
-        var_name,
-        var_type);
+    // Set the member variable m_var_name
+    m_var_name = ident_node->get_str();
 
-    // Annotate the node with the symbol
-    n->set_symbol(sym);
+    // Let higher-level visitors handle symbol table additions.
 }
-
 
 void SemanticAnalysis::visit_pointer_declarator(Node *n) {
     assert(n != nullptr);
@@ -463,9 +461,14 @@ void SemanticAnalysis::visit_function_parameter(Node *n) {
 
     // Process the declarator
     Node *declarator_node = n->get_kid(1);
-    m_var_name.clear();
-    m_var_type = param_type;
-    visit(declarator_node);
+    m_var_name.clear();          // Clear previous variable name
+    m_var_type = param_type;     // Set the current variable type
+    visit(declarator_node);      // This sets m_var_name and m_var_type
+
+    // Ensure that m_var_name has been set
+    if (m_var_name.empty()) {
+        SemanticError::raise(declarator_node->get_loc(), "Function parameter declarator missing name.");
+    }
 
     // Add parameter to symbol table
     if (m_cur_symtab->has_symbol_local(m_var_name)) {
@@ -476,13 +479,15 @@ void SemanticAnalysis::visit_function_parameter(Node *n) {
         declarator_node->get_loc(),
         SymbolKind::VARIABLE,
         m_var_name,
-        m_var_type);
+        m_var_type
+    );
 
     // Add parameter to function type
     m_cur_symtab->get_fn_type()->add_member(Member(m_var_name, m_var_type));
 
     declarator_node->set_symbol(sym);
 }
+
 
 void SemanticAnalysis::visit_statement_list(Node *n) {
     assert(n != nullptr);
@@ -767,20 +772,104 @@ void SemanticAnalysis::visit_unary_expression(Node *n) {
     assert(n != nullptr);
     assert(n->get_tag() == AST_UNARY_EXPRESSION);
 
+    // Retrieve the operator and operand nodes
     Node *op_node = n->get_kid(0);
     Node *expr_node = n->get_kid(1);
 
-    visit(expr_node); // This will now handle AST_LITERAL_VALUE nodes
+    // Visit the operand to perform semantic analysis
+    visit(expr_node);
     std::shared_ptr<Type> expr_type = expr_node->get_type();
-    std::string op_str = op_node->get_str();
 
-    if (op_str == "-") {
-        if (!expr_type->is_integral()) {
-            SemanticError::raise(expr_node->get_loc(), "Operand must be integral");
+    // Get the operator token tag
+    int op_tag = op_node->get_tag();
+
+    // Handle different unary operators based on the operator token
+    switch (op_tag) {
+        case TOK_AMPERSAND: { // Address-of operator '&'
+            // The operand must be an l-value
+            bool is_lvalue = false;
+            switch (expr_node->get_tag()) {
+                case AST_VARIABLE_REF:
+                case AST_POSTFIX_EXPRESSION:
+                    is_lvalue = true;
+                    break;
+                default:
+                    is_lvalue = false;
+            }
+
+            if (!is_lvalue) {
+                SemanticError::raise(n->get_loc(),
+                                     "Operand of '&' must be an lvalue");
+            }
+
+            // The operand cannot be a literal value
+            if (expr_node->get_tag() == AST_LITERAL_VALUE) {
+                SemanticError::raise(n->get_loc(),
+                                     "Cannot take the address of a literal value");
+            }
+
+            // Set the type to be a pointer to the operand's type
+            std::shared_ptr<Type> ptr_type = std::make_shared<PointerType>(expr_type);
+            n->set_type(ptr_type);
+            break;
         }
-        n->set_type(expr_type);
-    } else {
-        SemanticError::raise(n->get_loc(), "Unsupported unary operator '%s'", op_str.c_str());
+
+        case TOK_ASTERISK: { // Dereference operator '*'
+            // The operand must be a pointer type
+            if (!expr_type->is_pointer()) {
+                SemanticError::raise(n->get_loc(),
+                                     "Cannot dereference a non-pointer type with '*'");
+            }
+
+            // Retrieve the base type (pointee type) using get_base_type()
+            std::shared_ptr<Type> base_type = expr_type->get_base_type();
+            if (!base_type) {
+                SemanticError::raise(n->get_loc(),
+                                     "Pointer type does not have a base type");
+            }
+
+            // Set the type to the base type pointed to by the operand
+            n->set_type(base_type);
+            break;
+        }
+
+        case TOK_NOT: // Logical NOT '!'
+        case TOK_MINUS: // Unary minus '-'
+        case TOK_BITWISE_COMPL: { // Bitwise complement '~'
+            // Unary operators that require integral operands
+
+            // Check if the operand is an integral type
+            if (!expr_type->is_integral()) {
+                SemanticError::raise(n->get_loc(),
+                                     "Unary operator '%s' requires an integral operand",
+                                     op_node->get_str().c_str());
+            }
+
+            // Handle type promotion for literal values
+            if (expr_node->get_tag() == AST_LITERAL_VALUE) {
+                // Promote literal values to INT if necessary
+                std::shared_ptr<Type> promoted_type = std::make_shared<BasicType>(BasicTypeKind::INT, true);
+                n->set_type(promoted_type);
+            }
+            else if (expr_node->get_tag() == AST_VARIABLE_REF ||
+                     expr_node->get_tag() == AST_POSTFIX_EXPRESSION) {
+                // For variable references and expressions that are l-values, set the type accordingly
+                n->set_type(expr_type);
+            }
+            else {
+                // Unsupported operand type for the unary operator
+                SemanticError::raise(n->get_loc(),
+                                     "Unary operator '%s' cannot be applied to this operand",
+                                     op_node->get_str().c_str());
+            }
+            break;
+        }
+
+        default:
+            // Unsupported unary operator
+            SemanticError::raise(n->get_loc(),
+                                 "Unsupported unary operator '%s'",
+                                 op_node->get_str().c_str());
     }
 }
 
@@ -1141,10 +1230,9 @@ void SemanticAnalysis::visit_literal_value(Node *n) {
         // Character literal
         lit_type = std::make_shared<BasicType>(BasicTypeKind::CHAR, true);
     } else if (tok_tag == TOK_STR_LIT) {
-        // String literal (array of char)
-        lit_type = std::make_shared<ArrayType>(
-            std::make_shared<BasicType>(BasicTypeKind::CHAR, true),
-            tok_str.size());
+        // String literal treated as pointer to char for assignments
+        lit_type = std::make_shared<PointerType>(
+            std::make_shared<BasicType>(BasicTypeKind::CHAR, true));
     } else {
         SemanticError::raise(n->get_loc(), "Unknown literal");
     }
