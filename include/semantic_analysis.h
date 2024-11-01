@@ -97,6 +97,7 @@ private:
   std::shared_ptr<Type> get_ptrdiff_t_type();
   int determine_precision(const Type* type, const Location& loc);
   bool types_compatible_for_assignment(std::shared_ptr<Type> lhs, std::shared_ptr<Type> rhs);
+  bool is_lvalue(Node *n);
 };
 
 #endif // SEMANTIC_ANALYSIS_H

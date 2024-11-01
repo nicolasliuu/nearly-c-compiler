@@ -260,6 +260,7 @@ void SemanticAnalysis::visit_named_declarator(Node *n) {
     m_var_name = ident_node->get_str();
 
     // Let higher-level visitors handle symbol table additions.
+    n->set_type(m_var_type);
 }
 
 void SemanticAnalysis::visit_pointer_declarator(Node *n) {
@@ -297,44 +298,23 @@ void SemanticAnalysis::visit_array_declarator(Node *n) {
     }
 
     // Visit the size expression (if any)
-    Node *size_expr_node = n->get_kid(1);
-    if (size_expr_node->get_num_kids() > 0) { // Assuming size expression exists
-        visit(size_expr_node);
-        // Ensure size is a constant integer
-        std::shared_ptr<Type> size_type = size_expr_node->get_type();
-        if (!size_type->is_integral()) {
-            SemanticError::raise(size_expr_node->get_loc(),
-                                 "Array size must be an integer constant");
-        }
+    Node *size_node = n->get_kid(1);
+    assert(size_node->get_tag() == TOK_INT_LIT);
 
-        // Assume size is a literal integer for simplicity
-        int size = 0;
-        if (size_expr_node->get_tag() == AST_LITERAL_VALUE) {
-            Node *lit_node = size_expr_node->get_kid(0);
-            if (lit_node->get_tag() == TOK_INT_LIT) {
-                size = std::stoi(lit_node->get_str());
-            } else {
-                SemanticError::raise(size_expr_node->get_loc(),
-                                     "Array size must be an integer literal");
-            }
-        } else {
-            SemanticError::raise(size_expr_node->get_loc(),
-                                 "Array size must be an integer constant");
-        }
+    int size = std::stoi(size_node->get_str());
 
-        if (size <= 0) {
-            SemanticError::raise(size_expr_node->get_loc(),
-                                 "Array size must be positive");
-        }
-
-        // Wrap the child type with an ArrayType
-        std::shared_ptr<Type> array_type = std::make_shared<ArrayType>(child_type, size);
-
-        // Set the type on this array declarator node
-        n->set_type(array_type);
-    } else {
-        SemanticError::raise(n->get_loc(), "Array declarator missing size expression");
+    if (size < 0) {
+        SemanticError::raise(size_node->get_loc(), "Array size must be positive");
     }
+
+    // Wrap the child type with an ArrayType
+    std::shared_ptr<Type> array_type = std::make_shared<ArrayType>(child_type, size);
+
+    // Set the type on this array declarator node
+    n->set_type(array_type);
+    
+    // Update m_var_type
+    m_var_type = array_type;
 }
 
 void SemanticAnalysis::visit_function_definition(Node *n) {
@@ -387,7 +367,6 @@ void SemanticAnalysis::visit_function_definition(Node *n) {
     leave_scope();
 }
 
-
 void SemanticAnalysis::visit_function_declaration(Node *n) {
     assert(n != nullptr);
     assert(n->get_tag() == AST_FUNCTION_DECLARATION);
@@ -407,32 +386,41 @@ void SemanticAnalysis::visit_function_declaration(Node *n) {
     // Form the symbol name
     std::string symbol_name = func_name;
 
-    // Check if the function is already declared or defined
-    Symbol *existing_func = m_cur_symtab->lookup_local(symbol_name);
-    if (existing_func) {
-        // Ensure the existing declaration matches the new one
-        std::shared_ptr<Type> existing_type = existing_func->get_type();
-        if (!existing_type->is_same(return_type.get())) {
-            SemanticError::raise(n->get_loc(), "Function declaration error: return type mismatch for function '%s'", func_name.c_str());
+    // Check if a symbol with the same name already exists in the current scope
+    Symbol *existing_sym = m_cur_symtab->lookup_local(symbol_name);
+
+    if (existing_sym) {
+        SemanticError::raise(n->get_loc(), "Redefinition of '%s'", func_name.c_str());
+    } else {
+        // Check if the function is already declared or defined in an outer scope
+        Symbol *existing_func = m_cur_symtab->lookup_recursive(symbol_name);
+        std::shared_ptr<FunctionType> func_type;
+
+        if (existing_func) {
+            // Ensure the existing declaration matches the new one
+            std::shared_ptr<Type> existing_type = existing_func->get_type();
+            if (!existing_type->is_same(return_type.get())) {
+                SemanticError::raise(n->get_loc(), "Function declaration error: return type mismatch for function '%s'", func_name.c_str());
+            }
+
+            // Further checks on parameters can be added here (e.g., parameter count and types)
+        } else {
+            // Declare the function with its return type
+            func_type = std::make_shared<FunctionType>(return_type);
+            m_cur_symtab->add_entry(n->get_loc(), SymbolKind::FUNCTION, func_name, func_type);
+            existing_func = m_cur_symtab->lookup_local(symbol_name);
         }
 
-        // Further checks on parameters can be added here (e.g., parameter count and types)
-    } else {
-        // Declare the function with its return type
-        std::shared_ptr<FunctionType> func_type = std::make_shared<FunctionType>(return_type);
-        m_cur_symtab->add_entry(n->get_loc(), SymbolKind::FUNCTION, func_name, func_type);
-        existing_func = m_cur_symtab->lookup_local(symbol_name);
+        // Enter the function's symbol table scope
+        SymbolTable *func_symtab = enter_scope("function " + func_name);
+        m_cur_symtab->set_fn_type(func_type);
+
+        // Visit the parameter list
+        visit(param_list_node);
+
+        // Leave the function's symbol table scope
+        leave_scope();
     }
-
-    // Enter the function's symbol table scope
-    SymbolTable *func_symtab = enter_scope("function " + func_name);
-    m_cur_symtab->set_fn_type(existing_func->get_type());
-
-    // Visit the parameter list
-    visit(param_list_node);
-
-    // Leave the function's symbol table scope
-    leave_scope();
 }
 
 void SemanticAnalysis::visit_function_parameter_list(Node *n) {
@@ -465,6 +453,12 @@ void SemanticAnalysis::visit_function_parameter(Node *n) {
     m_var_type = param_type;     // Set the current variable type
     visit(declarator_node);      // This sets m_var_name and m_var_type
 
+    // *** Add this check to handle array declarators in function parameters ***
+    if (declarator_node->get_tag() == AST_ARRAY_DECLARATOR) {
+        // If it's an array declarator, simply convert it to a pointer type
+        m_var_type = std::make_shared<PointerType>(m_var_type->get_base_type()); 
+    }
+
     // Ensure that m_var_name has been set
     if (m_var_name.empty()) {
         SemanticError::raise(declarator_node->get_loc(), "Function parameter declarator missing name.");
@@ -488,28 +482,76 @@ void SemanticAnalysis::visit_function_parameter(Node *n) {
     declarator_node->set_symbol(sym);
 }
 
-
 void SemanticAnalysis::visit_statement_list(Node *n) {
     assert(n != nullptr);
     assert(n->get_tag() == AST_STATEMENT_LIST);
 
-    // Do not enter a new scope for function body
-    bool is_function_body = m_cur_symtab->has_fn_type();
-
-    if (!is_function_body) {
-        std::string scope_name = "block " + std::to_string(n->get_loc().get_line());
-        enter_scope(scope_name);
-    }
-
     for (unsigned i = 0; i < n->get_num_kids(); ++i) {
         Node *stmt_node = n->get_kid(i);
-        visit(stmt_node);
-    }
+        int stmt_tag = stmt_node->get_tag();
 
-    if (!is_function_body) {
-        leave_scope();
+        if (stmt_tag == AST_FOR_STATEMENT) {
+            Node *init_node = stmt_node->get_kid(0);
+            visit(init_node);
+
+
+            Node *cond_node = stmt_node->get_kid(1);
+            visit(cond_node);
+
+            Node *iter_node = stmt_node->get_kid(2);
+            visit(iter_node);
+
+            Node *body_node = stmt_node->get_kid(3);
+
+            // Enter a new scope for the loop body
+            std::string scope_name = "block " + std::to_string(body_node->get_loc().get_line());
+            enter_scope(scope_name);
+
+            visit(body_node);
+
+            leave_scope();
+        }
+        else if (stmt_tag == AST_IF_STATEMENT) {
+            // 1. Visit Condition
+            Node *cond_node = stmt_node->get_kid(0);
+            visit(cond_node);
+
+            // 2. Visit Then Branch
+            Node *then_branch = stmt_node->get_kid(1);
+            std::string then_scope = "block " + std::to_string(then_branch->get_loc().get_line());
+            enter_scope(then_scope);  
+            visit(then_branch);
+            leave_scope(); 
+
+            // 3. Visit Else Branch (if it exists)
+            if (stmt_node->get_num_kids() > 2) {
+                Node *else_branch = stmt_node->get_kid(2);
+                // Enter a new scope for the 'else' branch
+                std::string else_scope = "block " + std::to_string(else_branch->get_loc().get_line());
+                enter_scope(else_scope);
+                visit(else_branch);
+                leave_scope();
+            }
+        } else if (stmt_tag == AST_WHILE_STATEMENT) {
+            // Handle 'while' loop
+            // Enter loop scope
+            Node *cond_node = stmt_node->get_kid(0);
+            visit(cond_node);
+
+            Node *body_node = stmt_node->get_kid(1);
+
+            std::string scope_name = "block " + std::to_string(body_node->get_loc().get_line());
+            enter_scope(scope_name);
+
+            visit(body_node);
+
+            leave_scope();
+        } else {
+            visit(stmt_node);
+        }
     }
 }
+
 
 void SemanticAnalysis::visit_return_expression_statement(Node *n) {
     assert(n != nullptr);
@@ -600,6 +642,10 @@ void SemanticAnalysis::visit_binary_expression(Node *n) {
         // Assignment operator '='
 
         // Left operand must be an lvalue
+        if (!is_lvalue(left_node)) {
+            SemanticError::raise(n->get_loc(), "Binary expression error: Left operand must be an lvalue");
+        }
+
         int l_tag = left_node->get_tag();
         if (l_tag == AST_LITERAL_VALUE || l_tag == AST_FUNCTION_CALL_EXPRESSION) { 
             SemanticError::raise(n->get_loc(), "Binary expression error: Left operand must be an lvalue");
@@ -612,7 +658,9 @@ void SemanticAnalysis::visit_binary_expression(Node *n) {
 
         // Check type compatibility for assignment
         if (!types_compatible_for_assignment(left_type, right_type)) {
-            SemanticError::raise(n->get_loc(), "Type mismatch in assignment");
+            std::string lhs_type_str = left_type->as_str();
+            std::string rhs_type_str = right_type->as_str();
+            SemanticError::raise(n->get_loc(), "Incompatible types (pointer to %s, pointer to %s) in assignment", lhs_type_str.c_str(), rhs_type_str.c_str());
         }
 
         // Insert implicit conversion if needed
@@ -791,6 +839,9 @@ void SemanticAnalysis::visit_unary_expression(Node *n) {
             switch (expr_node->get_tag()) {
                 case AST_VARIABLE_REF:
                 case AST_POSTFIX_EXPRESSION:
+                case AST_FIELD_REF_EXPRESSION:
+                case AST_INDIRECT_FIELD_REF_EXPRESSION:
+                case AST_ARRAY_ELEMENT_REF_EXPRESSION:
                     is_lvalue = true;
                     break;
                 default:
@@ -1158,7 +1209,6 @@ void SemanticAnalysis::visit_indirect_field_ref_expression(Node *n) {
     n->set_type(member->get_type());
 }
 
-
 void SemanticAnalysis::visit_array_element_ref_expression(Node *n) {
     assert(n != nullptr);
     assert(n->get_tag() == AST_ARRAY_ELEMENT_REF_EXPRESSION);
@@ -1187,12 +1237,7 @@ void SemanticAnalysis::visit_array_element_ref_expression(Node *n) {
     }
 
     // Determine the element type
-    std::shared_ptr<Type> element_type;
-    if (array_type->is_array()) {
-        element_type = array_type->get_base_type();
-    } else { // pointer
-        element_type = array_type->get_base_type();
-    }
+    std::shared_ptr<Type> element_type = array_type->get_base_type(); 
 
     // Set the type of the array element reference expression
     n->set_type(element_type);
@@ -1230,9 +1275,10 @@ void SemanticAnalysis::visit_literal_value(Node *n) {
         // Character literal
         lit_type = std::make_shared<BasicType>(BasicTypeKind::CHAR, true);
     } else if (tok_tag == TOK_STR_LIT) {
-        // String literal treated as pointer to char for assignments
-        lit_type = std::make_shared<PointerType>(
-            std::make_shared<BasicType>(BasicTypeKind::CHAR, true));
+        // String literal treated as pointer to const char
+        std::shared_ptr<Type> char_type = std::make_shared<BasicType>(BasicTypeKind::CHAR, true);
+        std::shared_ptr<Type> const_char_type = std::make_shared<QualifiedType>(char_type, TypeQualifier::CONST);
+        lit_type = std::make_shared<PointerType>(const_char_type);
     } else {
         SemanticError::raise(n->get_loc(), "Unknown literal");
     }
@@ -1271,22 +1317,60 @@ Node *SemanticAnalysis::implicit_conversion(Node *n,
 }
 
 bool SemanticAnalysis::types_compatible_for_assignment(const std::shared_ptr<Type> lhs, const std::shared_ptr<Type> rhs) {
+    if (lhs->is_array() || rhs->is_array()) {
+        // If either side is an array, handle it separately
+        if (lhs->is_array() && rhs->is_array()) {
+            // Array to array assignment is not allowed
+            return false; 
+        } else if (lhs->is_pointer() && rhs->is_array()) {
+            // Allow assignment of array to pointer (with implicit conversion)
+            const Type *lhs_base_unqual = lhs->get_base_type()->get_unqualified_type();
+            const Type *rhs_base_unqual = rhs->get_base_type()->get_unqualified_type();
+            return lhs_base_unqual->is_same(rhs_base_unqual);
+        } else if (lhs->is_array() && rhs->is_pointer()) {
+            // Allow assignment of pointer to array (with implicit conversion)
+            const Type *lhs_base_unqual = lhs->get_base_type()->get_unqualified_type();
+            const Type *rhs_base_unqual = rhs->get_base_type()->get_unqualified_type();
+            return lhs_base_unqual->is_same(rhs_base_unqual);
+        } else {
+            return false;
+        }
+    }
+
     if (lhs->is_integral() && rhs->is_integral()) {
-        // Integral types are compatible for assignment
+        return true;  // Allow assignment between integral types
+    }
+
+    if (lhs->is_pointer() && rhs->is_pointer()) {
+        // Check if unqualified base types are the same
+        const Type *lhs_base_unqual = lhs->get_base_type()->get_unqualified_type();
+        const Type *rhs_base_unqual = rhs->get_base_type()->get_unqualified_type();
+        
+        if (!lhs_base_unqual->is_same(rhs_base_unqual)) {
+            return false;
+        }
+
+        // Extract const and volatile qualifiers from the pointee types
+        bool lhs_pointee_const = lhs->get_base_type()->is_const();
+        bool lhs_pointee_volatile = lhs->get_base_type()->is_volatile();
+        bool rhs_pointee_const = rhs->get_base_type()->is_const();
+        bool rhs_pointee_volatile = rhs->get_base_type()->is_volatile();
+
+        // Disallow assigning a pointer with more qualifiers to a pointer with fewer qualifiers
+        if ((!lhs_pointee_const && rhs_pointee_const) ||
+            (!lhs_pointee_volatile && rhs_pointee_volatile)) {
+            return false;
+        }
+
+        // Allow all other cases (including assigning non-volatile to volatile)
         return true;
     }
-    if (lhs->is_pointer() && rhs->is_pointer()) {
-        // Check if base types are compatible
-        const Type *lhs_base = lhs->get_base_type()->get_unqualified_type();
-        const Type *rhs_base = rhs->get_base_type()->get_unqualified_type();
-        return lhs_base->is_same(rhs_base);
-    }
+
     if (lhs->is_struct() && rhs->is_struct()) {
-        // Structs must be the same type
-        return lhs->is_same(rhs.get());
+        return lhs->is_same(rhs.get());  // Structs must match exactly
     }
-    // Other combinations are not compatible
-    return false;
+
+    return false;  // Other combinations are incompatible
 }
 
 int SemanticAnalysis::determine_precision(const Type* type, const Location& loc) {
@@ -1383,4 +1467,25 @@ void SemanticAnalysis::is_less_precise(Node *left_node, Node *right_node, Node *
     }
 
     expr_node->set_type(common_type);
+}
+
+bool SemanticAnalysis::is_lvalue(Node *n) {
+    assert(n != nullptr);
+    switch (n->get_tag()) {
+        case AST_UNARY_EXPRESSION: {
+            // Check if it's a dereference expression
+            if (n->get_kid(0)->get_tag() == TOK_ASTERISK) { 
+                return true;
+            }
+            return false;
+        }
+        case AST_VARIABLE_REF:
+        case AST_ARRAY_ELEMENT_REF_EXPRESSION:
+        case AST_POSTFIX_EXPRESSION:
+        case AST_FIELD_REF_EXPRESSION:
+        case AST_INDIRECT_FIELD_REF_EXPRESSION:
+            return true;
+        default:
+            return false;
+    }
 }
